@@ -45,8 +45,13 @@ binary-outcome and time-to-event regression models.
 ## Install
 
 ```r
-# from a local checkout
-devtools::install()
+# from GitHub
+# install.packages("pak")
+pak::pak("kestrel99/strapwise")
+
+# or with remotes
+# install.packages("remotes")
+remotes::install_github("kestrel99/strapwise")
 ```
 
 ## Examples
