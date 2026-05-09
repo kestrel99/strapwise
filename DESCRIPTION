@@ -1,0 +1,32 @@
+Package: strapwise
+Title: Bootstrap Inference and Response Curves for Logistic Regression
+Version: 0.1.0
+Authors@R: person("Justin", "Wilkins", email = "justin.wilkins@occams.com",
+    role = c("aut", "cre"))
+Description: Provides case-resampling bootstrap for fitted binomial GLMs,
+    returning percentile confidence intervals for all model coefficients.
+    A companion plotting function generates marginal response curves for
+    continuous predictors (probability curve with bootstrap CI ribbon and
+    observed-outcome jittered points) and predicted-probability plots for categorical
+    predictors (dot + error bars), with observed binary outcomes overlaid
+    as jittered points on both plot types.
+License: GPL-2
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    ggplot2 (>= 3.4.0),
+    forestploter,
+    grid,
+    plotROC,
+    scales (>= 1.2.0),
+    survival
+Suggests:
+    patchwork,
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3

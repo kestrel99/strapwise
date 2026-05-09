@@ -1,0 +1,227 @@
+---
+title: "Bootstrap Inference for Logistic Regression"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Bootstrap Inference for Logistic Regression}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse  = TRUE,
+  comment   = "#>",
+  fig.width = 7,
+  fig.height = 4.5,
+  dpi       = 150,
+  out.width = "100%"
+)
+set.seed(42)
+```
+
+## Overview
+
+**strapwise** provides two functions:
+
+- `bootstrap_logistic()` — applies case-resampling bootstrap to a fitted
+  `glm` object with `family = binomial`, producing a matrix of bootstrapped
+  coefficients and percentile confidence intervals.
+- `plot_logistic_curves()` — generates one marginal response-curve plot per
+  predictor: a ribbon + probability curve for continuous predictors, and a
+  dot + error bar chart for categorical predictors, with observed binary
+  outcomes overlaid as jittered points on both.
+
+---
+
+## Simulated data
+
+We simulate a binary outcome influenced by age (continuous), BMI
+(continuous), sex (two-level factor), and treatment (three-level ordered
+factor).
+
+```{r simulate}
+library(strapwise)
+
+set.seed(42)
+n  <- 400
+df <- data.frame(
+  age = rnorm(n, mean = 55, sd = 12),
+  bmi = rnorm(n, mean = 27, sd =  5),
+  sex = factor(sample(c("Female", "Male"), n, replace = TRUE)),
+  trt = factor(
+    sample(c("Placebo", "Low", "High"), n, replace = TRUE,
+           prob = c(0.33, 0.33, 0.34)),
+    levels = c("Placebo", "Low", "High")
+  )
+)
+
+df$y <- rbinom(n, 1, plogis(
+  -3 +
+  0.04 * df$age +
+  0.06 * df$bmi +
+  0.50 * (df$sex == "Male") +
+  0.80 * (df$trt == "Low") +
+  1.50 * (df$trt == "High")
+))
+
+table(df$y)
+```
+
+---
+
+## Fit the logistic regression model
+
+Model fitting is the user's responsibility. `strapwise` works with any
+`glm(..., family = binomial)` object—the link function (logit, probit,
+complementary log-log, etc.) is detected automatically.
+
+```{r fit}
+fit <- glm(y ~ age + bmi + sex + trt, data = df, family = binomial)
+summary(fit)
+```
+
+---
+
+## Run the bootstrap
+
+`bootstrap_logistic()` resamples the original data with replacement and
+refits the model `n_boot` times. Replicates that error or generate warnings
+during refitting are skipped; if any are skipped, the function reports how
+many.
+
+```{r bootstrap}
+bl <- bootstrap_logistic(fit, n_boot = 1000, seed = 42, conf_level = 0.95)
+print(bl)
+```
+
+`summary()` returns a data frame of original-data estimates with bootstrapped
+standard errors, bias, and percentile confidence intervals.
+
+```{r summary}
+summary(bl)
+```
+
+---
+
+## Response curve plots
+
+`plot_logistic_curves()` returns a named list of `ggplot` objects—one per
+predictor. Non-focal predictors are held at their **median** (numeric) or
+**mode** (factor).
+
+### Continuous predictors
+
+Each continuous-predictor plot shows:
+
+- A probability curve (original-data model fit).
+- A shaded ribbon (95% bootstrap CI).
+- Jittered raw 0/1 outcomes at their true y-value, providing direct
+  visualisation of the data density and balance.
+
+```{r plot-age, fig.cap = "Marginal response curve for age."}
+plots <- plot_logistic_curves(bl)
+plots[["age"]]
+```
+
+```{r plot-bmi, fig.cap = "Marginal response curve for BMI."}
+plots[["bmi"]]
+```
+
+### Categorical predictors
+
+Each categorical-predictor plot shows:
+
+- A predicted-probability marker per level (filled dot).
+- 95% bootstrap CI error bars.
+- Jittered 0/1 raw outcomes within each category strip, coloured by level.
+
+```{r plot-sex, fig.cap = "Predicted probability of response by sex."}
+plots[["sex"]]
+```
+
+```{r plot-trt, fig.cap = "Predicted probability of response by treatment group."}
+plots[["trt"]]
+```
+
+---
+
+## Combined figure
+
+If **patchwork** is installed all four plots can be assembled in one call.
+
+```{r combine, fig.width = 12, fig.height = 8, fig.cap = "All response curves."}
+# install.packages("patchwork")   # if needed
+plot_logistic_curves(bl, combine = TRUE)
+```
+
+---
+
+## Alternative link functions
+
+The functions work unchanged with any `binomial` link. The `linkinv`
+function is read directly from the fitted model object, so back-transformation
+is always consistent with the link used.
+
+```{r probit}
+fit_probit <- glm(y ~ age + bmi + sex + trt, data = df,
+                  family = binomial(link = "probit"))
+bl_probit  <- bootstrap_logistic(fit_probit, n_boot = 500, seed = 1)
+plot_logistic_curves(bl_probit)[["age"]]
+```
+
+---
+
+## Comparing models with ROC curves
+
+`compare_logistic_roc()` overlays ROC curves from multiple fitted binomial
+GLMs in a single `ggplot`, making it easy to compare discrimination across
+candidate models.
+
+```{r roc-comparison, fig.cap = "Overlaid ROC curves for two logistic regression models."}
+fit_age <- glm(y ~ age, data = df, family = binomial)
+fit_full <- glm(y ~ age + bmi + sex + trt, data = df, family = binomial)
+
+compare_logistic_roc(
+  list("Age only" = fit_age, "Full model" = fit_full)
+)
+```
+
+---
+
+## Inline formula transformations
+
+Formulae with inline transformations such as `log()` or `I()` are supported.
+`bootstrap_logistic()` stores the original untransformed data and lets
+`model.matrix()` apply the transformation during each bootstrap refit.
+The resulting plot uses the base variable name on the x-axis, with
+predictions made on the transformed scale.
+
+```{r log-transform}
+fit_log <- glm(y ~ log(age) + bmi + sex, data = df, family = binomial)
+bl_log  <- bootstrap_logistic(fit_log, n_boot = 500, seed = 1)
+plot_logistic_curves(bl_log)[["age"]]
+```
+
+---
+
+## Customising plots
+
+All visual parameters are exposed as arguments to `plot_logistic_curves()`.
+Plots are standard `ggplot` objects and can be further modified after the
+fact.
+
+```{r custom, fig.cap = "Customised response curve for age."}
+library(ggplot2)
+
+plot_logistic_curves(
+  bl,
+  palette        = c("#8B1A1A", "#2F4F8B"),
+  ribbon_alpha   = 0.15,
+  raw_alpha      = 0.15,
+  raw_point_size = 1,
+  jitter_height  = 0.015,
+  base_theme     = theme_minimal(base_size = 13)
+)[["age"]] +
+  labs(title = "Custom theme: age response curve",
+       caption = "Shading = 95% bootstrap CI")
+```
