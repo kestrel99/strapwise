@@ -107,7 +107,12 @@ roc_logistic_emax <- function(
   roc_df$youden <- roc_df$sensitivity + roc_df$specificity - 1
   best <- roc_df[which.max(roc_df$youden), ]
 
-  p <- ggplot2::ggplot(roc_df, ggplot2::aes(x = fpr, y = sensitivity)) +
+  # Deduplicate to unique (fpr, sensitivity) corners before plotting.
+  # ggplot2's StatAlign passes single-group data unchanged, and GeomRibbon
+  # drops duplicate-x rows during polygon construction, causing incomplete fill.
+  plot_df <- roc_df[!duplicated(roc_df[, c("fpr", "sensitivity")]), ]
+
+  p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = fpr, y = sensitivity)) +
     ggplot2::geom_area(fill = fill, alpha = alpha) +
     ggplot2::geom_line(color = color, linewidth = 1.1) +
     ggplot2::geom_point(
