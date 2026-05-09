@@ -102,8 +102,8 @@ roc_logistic <- function(
   roc_for_model <- function(y_obs, y_pred) {
     df <- do.call(rbind, lapply(thresholds, function(thr) {
       pos <- y_pred >= thr
-      tp  <- sum( pos &  y_obs == 1)
-      fp  <- sum( pos &  y_obs == 0)
+      tp  <- sum(pos &  y_obs == 1)
+      fp  <- sum(pos &  y_obs == 0)
       fn  <- sum(!pos &  y_obs == 1)
       tn  <- sum(!pos &  y_obs == 0)
       data.frame(
@@ -128,10 +128,10 @@ roc_logistic <- function(
   hm_ci <- function(auc, n1, n0) {
     q1 <- auc / (2 - auc)
     q2 <- 2 * auc^2 / (1 + auc)
-    se <- sqrt(
-      (auc * (1 - auc) + (n1 - 1) * (q1 - auc^2) + (n0 - 1) * (q2 - auc^2)) /
-      (n1 * n0)
-    )
+    num <- auc * (1 - auc) +
+      (n1 - 1) * (q1 - auc^2) +
+      (n0 - 1) * (q2 - auc^2)
+    se <- sqrt(num / (n1 * n0))
     z  <- stats::qnorm(0.975)
     c(lo = pmax(0, auc - z * se), hi = pmin(1, auc + z * se))
   }
@@ -144,11 +144,13 @@ roc_logistic <- function(
 
   for (i in seq_len(n_models)) {
     y_pred <- tryCatch(
-      predict(models[[i]], type = "response"),
-      error = function(e) stop(
-        "Could not get fitted probabilities from model '", labels[i],
-        "': ", conditionMessage(e)
-      )
+      stats::predict(models[[i]], type = "response"),
+      error = function(e) {
+        stop(
+          "Could not get fitted probabilities from model '", labels[i],
+          "': ", conditionMessage(e)
+        )
+      }
     )
     y_obs <- outcome[seq_along(y_pred)]
     ok    <- !is.na(y_obs) & !is.na(y_pred)
@@ -172,7 +174,7 @@ roc_logistic <- function(
     if (ci) {
       cival <- hm_ci(auc, sum(y_obs == 1), sum(y_obs == 0))
       legend_labels[i] <- sprintf(
-        "%s: AUC = %.3f (%.3f–%.3f)",
+        "%s: AUC = %.3f (%.3f-%.3f)",
         labels[i], auc, cival["lo"], cival["hi"]
       )
     } else {
@@ -227,11 +229,6 @@ roc_logistic <- function(
       ggplot2::aes(x = fpr, y = sensitivity, color = model),
       size = 3, shape = 16, show.legend = FALSE
     ) +
-    { if (ref_line)
-        ggplot2::geom_abline(
-          slope = 1, intercept = 0, linetype = "dashed", color = "grey50"
-        )
-    } +
     color_scale +
     fill_scale +
     ggplot2::scale_x_continuous(
@@ -254,8 +251,19 @@ roc_logistic <- function(
       legend.text     = ggplot2::element_text(size = 11)
     )
 
+  if (ref_line) {
+    p <- p + ggplot2::geom_abline(
+      slope = 1, intercept = 0, linetype = "dashed", color = "grey50"
+    )
+  }
+
   invisible(structure(
-    list(plot = p, roc_list = roc_list, auc = auc_vec, best_threshold = best_list),
+    list(
+      plot           = p,
+      roc_list       = roc_list,
+      auc            = auc_vec,
+      best_threshold = best_list
+    ),
     class = "roc_logistic"
   ))
 }
