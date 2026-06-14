@@ -18,22 +18,32 @@
 #' three-parameter logistic Emax formula.
 #'
 #' @section Covariate matrices:
-#' `linear_covs`, `emax_covs`, and `ec50_covs` must be numeric matrices (or
-#' objects coercible via [as.matrix()]) with `length(y)` rows.  Expand factors
-#' in advance with [model.matrix()].  Column names label the coefficients;
-#' unnamed columns receive labels `"V1"`, `"V2"`, etc.
+#' `linear_covs`, `emax_covs`, and `ec50_covs` accept numeric matrices,
+#' factors, character vectors, or data frames (possibly mixing numeric and
+#' categorical columns).  Categorical variables are automatically expanded via
+#' [model.matrix()] using treatment contrasts: for a factor with \eqn{k}
+#' levels the reference level is absorbed by the base parameter (\eqn{E_0},
+#' \eqn{E_{max}}, or \eqn{\log EC_{50}}) and \eqn{k-1} contrast columns are
+#' added.  All inputs must have `length(y)` rows.  Column names label the
+#' coefficients; unnamed columns receive labels `"V1"`, `"V2"`, etc.
+#' When predicting with categorical covariates, pass new data in the same form
+#' (factor or data frame); [predict.logistic_emax()] re-applies the training
+#' contrasts and reference levels automatically.
 #'
 #' @param y Numeric binary outcome vector (0 or 1).
 #' @param x Numeric predictor vector (e.g. dose, concentration, time), same
 #'   length as `y`.
-#' @param linear_covs Optional numeric matrix of covariates that enter the
-#'   linear predictor additively (\eqn{\mathbf{z}_{lin}}). `NULL` omits.
-#' @param emax_covs Optional numeric matrix of covariates that modify the Emax
-#'   parameter additively (\eqn{\mathbf{z}_{emax}}). `NULL` omits.
-#' @param ec50_covs Optional numeric matrix of covariates that modify
-#'   \eqn{\log(EC_{50})} additively (\eqn{\mathbf{z}_{ec50}}); a coefficient
-#'   of \eqn{\delta} multiplies EC50 by \eqn{e^\delta} per unit increase.
+#' @param linear_covs Optional covariates that enter the linear predictor
+#'   additively (\eqn{\mathbf{z}_{lin}}).  Accepts a numeric matrix, a factor,
+#'   a character vector, or a data frame; see **Covariate matrices**. `NULL`
+#'   omits.
+#' @param emax_covs Optional covariates that modify the Emax parameter
+#'   additively (\eqn{\mathbf{z}_{emax}}).  Same formats as `linear_covs`.
 #'   `NULL` omits.
+#' @param ec50_covs Optional covariates that modify \eqn{\log(EC_{50})}
+#'   additively (\eqn{\mathbf{z}_{ec50}}); a coefficient of \eqn{\delta}
+#'   multiplies EC50 by \eqn{e^\delta} per unit change.  Same formats as
+#'   `linear_covs`.  `NULL` omits.
 #' @param start Starting values. One of:
 #'   \itemize{
 #'     \item `NULL` (default): auto-derived from a simple logistic regression;
@@ -76,6 +86,10 @@
 #'       (0-column matrices when the corresponding argument was `NULL`).}
 #'     \item{`idx`}{Named list of integer indices into `theta_hat` for each
 #'       parameter group, used internally by [predict.logistic_emax()].}
+#'     \item{`mm_info_lin`, `mm_info_emax`, `mm_info_ec50`}{List (or `NULL`)
+#'       of model-matrix metadata (terms, xlevels, contrasts) present when
+#'       categorical covariates were supplied; consumed by
+#'       [predict.logistic_emax()] to re-expand new data consistently.}
 #'     \item{`call`}{The matched function call.}
 #'   }
 #'
@@ -98,10 +112,15 @@
 #' fit2 <- fit_logistic_emax(y, dose, linear_covs = cbind(weight = wt))
 #' print(fit2)
 #'
-#' # Covariate modifying Emax
+#' # Covariate modifying Emax (binary group as numeric)
 #' grp <- rbinom(n, 1, 0.5)
 #' fit3 <- fit_logistic_emax(y, dose, emax_covs = cbind(group = grp))
 #' print(fit3)
+#'
+#' # Categorical covariate: factor passed directly (no pre-expansion needed)
+#' trt <- factor(sample(c("placebo", "low", "high"), n, replace = TRUE))
+#' fit4 <- fit_logistic_emax(y, dose, linear_covs = data.frame(treatment = trt))
+#' print(fit4)
 #'
 #' @export
 fit_logistic_emax <- function(
@@ -120,18 +139,43 @@ fit_logistic_emax <- function(
 
   # ---- Covariate matrices (original length, before subsetting) ---------------
   to_mat <- function(z, n_orig, label) {
-    if (is.null(z)) return(matrix(0, nrow = n_orig, ncol = 0))
-    m <- as.matrix(z)
-    if (!is.numeric(m))    stop(label, " must be numeric.")
+    if (is.null(z)) return(list(mat = matrix(0, nrow = n_orig, ncol = 0), mm_info = NULL))
+    needs_expansion <- is.factor(z) || is.character(z) ||
+      (is.data.frame(z) &&
+         any(vapply(z, function(v) is.factor(v) || is.character(v), logical(1L))))
+    if (needs_expansion) {
+      df  <- if (is.data.frame(z)) z else
+        data.frame(.var = if (is.character(z)) as.factor(z) else z)
+      df[]  <- lapply(df, function(v) if (is.character(v)) as.factor(v) else v)
+      mf  <- stats::model.frame(~ ., data = df, na.action = stats::na.pass)
+      mm  <- stats::model.matrix(attr(mf, "terms"), data = mf)
+      mm  <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+      xlevels <- lapply(mf, function(v) if (is.factor(v)) levels(v) else NULL)
+      xlevels <- xlevels[!vapply(xlevels, is.null, logical(1L))]
+      mm_info <- list(
+        terms     = attr(mf, "terms"),
+        xlevels   = xlevels,
+        contrasts = attr(mm, "contrasts")
+      )
+      m <- matrix(as.numeric(mm), nrow = nrow(mm), ncol = ncol(mm), dimnames = dimnames(mm))
+    } else {
+      m       <- as.matrix(z)
+      if (!is.numeric(m))
+        stop(label, " must be numeric, a factor, or a data frame.")
+      mm_info <- NULL
+    }
     if (nrow(m) != n_orig) stop(label, " must have ", n_orig, " rows.")
-    if (ncol(m) > 0 && is.null(colnames(m)))
+    if (ncol(m) > 0L && is.null(colnames(m)))
       colnames(m) <- paste0("V", seq_len(ncol(m)))
-    m
+    list(mat = m, mm_info = mm_info)
   }
-  n_orig     <- length(y)
-  Z_lin_raw  <- to_mat(linear_covs, n_orig, "linear_covs")
-  Z_emax_raw <- to_mat(emax_covs,   n_orig, "emax_covs")
-  Z_ec50_raw <- to_mat(ec50_covs,   n_orig, "ec50_covs")
+  n_orig       <- length(y)
+  res_lin      <- to_mat(linear_covs, n_orig, "linear_covs")
+  res_emax     <- to_mat(emax_covs,   n_orig, "emax_covs")
+  res_ec50     <- to_mat(ec50_covs,   n_orig, "ec50_covs")
+  Z_lin_raw    <- res_lin$mat;   mm_info_lin  <- res_lin$mm_info
+  Z_emax_raw   <- res_emax$mat;  mm_info_emax <- res_emax$mm_info
+  Z_ec50_raw   <- res_ec50$mat;  mm_info_ec50 <- res_ec50$mm_info
 
   # ---- Complete-case subsetting ----------------------------------------------
   ok <- stats::complete.cases(y, x)
@@ -302,6 +346,9 @@ fit_logistic_emax <- function(
       Z_emax            = Z_emax,
       Z_ec50            = Z_ec50,
       idx               = idx,
+      mm_info_lin       = mm_info_lin,
+      mm_info_emax      = mm_info_emax,
+      mm_info_ec50      = mm_info_ec50,
       call              = match.call()
     ),
     class = "logistic_emax"
@@ -418,11 +465,25 @@ predict.logistic_emax <- function(
   n_new            <- length(x_new)
 
   # ---- Resolve covariate matrices at prediction points -----------------------
-  resolve_cov <- function(new_z, train_z, label) {
+  expand_new_cov <- function(new_z, mm_info) {
+    if (is.null(mm_info)) return(as.matrix(new_z))
+    df  <- if (is.data.frame(new_z)) new_z else
+      data.frame(.var = if (is.character(new_z)) as.factor(new_z) else new_z)
+    df[]  <- lapply(df, function(v) if (is.character(v)) as.factor(v) else v)
+    mm  <- stats::model.matrix(
+      mm_info$terms, data = df,
+      xlev          = mm_info$xlevels,
+      contrasts.arg = mm_info$contrasts
+    )
+    mm  <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+    matrix(as.numeric(mm), nrow = nrow(mm), ncol = ncol(mm), dimnames = dimnames(mm))
+  }
+
+  resolve_cov <- function(new_z, train_z, mm_info, label) {
     p <- ncol(train_z)
     if (p == 0L) return(matrix(0, nrow = n_new, ncol = 0L))
     if (!is.null(new_z)) {
-      m <- as.matrix(new_z)
+      m <- expand_new_cov(new_z, mm_info)
       if (nrow(m) != n_new)
         stop(label, " must have ", n_new, " rows.")
       if (ncol(m) != p)
@@ -436,9 +497,9 @@ predict.logistic_emax <- function(
     train_z
   }
 
-  Z_lin_new  <- resolve_cov(newlinear, object$Z_lin,  "newlinear")
-  Z_emax_new <- resolve_cov(newemax,   object$Z_emax, "newemax")
-  Z_ec50_new <- resolve_cov(newec50,   object$Z_ec50, "newec50")
+  Z_lin_new  <- resolve_cov(newlinear, object$Z_lin,  object$mm_info_lin,  "newlinear")
+  Z_emax_new <- resolve_cov(newemax,   object$Z_emax, object$mm_info_emax, "newemax")
+  Z_ec50_new <- resolve_cov(newec50,   object$Z_ec50, object$mm_info_ec50, "newec50")
 
   p_lin  <- ncol(Z_lin_new)
   p_emax <- ncol(Z_emax_new)
